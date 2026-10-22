@@ -1,0 +1,51 @@
+name: smoke
+# workflow_dispatch only: needs write access, so forks and drive-by PRs can never reach the
+# self-hosted runner (a privileged dind pod on a laptop kind cluster).
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Scale set name (runs-on label)
+        default: cibox-daveops
+      jobs:
+        description: Parallel jobs per runner (load test)
+        default: "1"
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.m.outputs.shards }}
+    steps:
+      - id: m
+        env:
+          JOBS: ${{ inputs.jobs }}
+        run: echo "shards=[$(seq -s, 1 "$JOBS")]" >> "$GITHUB_OUTPUT"
+
+  smoke:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+        runner: ["${{ inputs.runner }}", ubuntu-latest]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: runner
+        run: |
+          echo "runner=$RUNNER_NAME os=$(. /etc/os-release; echo "$PRETTY_NAME") cpus=$(nproc)"
+          cat /etc/resolv.conf
+          getent hosts github.com
+      - name: docker (dind)
+        run: |
+          docker version --format '{{.Server.Version}}'
+          printf 'FROM busybox\nRUN echo built\n' | docker build -q -t cibox-smoke -
+          docker run --rm cibox-smoke echo ran
+      - name: rate limit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api rate_limit --jq '.resources.core | "core \(.used)/\(.limit)"'
