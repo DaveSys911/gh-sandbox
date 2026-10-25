@@ -10,6 +10,9 @@ on:
       jobs:
         description: Parallel jobs per runner (load test)
         default: "1"
+      hold:
+        description: Seconds each job sleeps, so load-test jobs overlap
+        default: "0"
 
 permissions:
   contents: read
@@ -45,7 +48,19 @@ jobs:
           docker version --format '{{.Server.Version}}'
           printf 'FROM busybox\nRUN echo built\n' | docker build -q -t cibox-smoke -
           docker run --rm cibox-smoke echo ran
+      # curl, not gh: the ARC runner image ships without gh. The anonymous call is the
+      # one that differs per runner: it is metered by egress IP, the token call by installation.
       - name: rate limit
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh api rate_limit --jq '.resources.core | "core \(.used)/\(.limit)"'
+        run: |
+          core() { sed -n '/"core"/,/}/p' | grep -oE '"(limit|used)": *[0-9]+' | tr -d '" ' | paste -sd' ' -; }
+          echo "token: $(curl -fsS -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/rate_limit | core)"
+          echo "anon:  $(curl -fsS https://api.github.com/rate_limit | core)"
+      - name: hold
+        if: inputs.hold != '0'
+        env:
+          HOLD: ${{ inputs.hold }}
+        run: |
+          [[ "$HOLD" =~ ^[0-9]+$ ]] || { echo "hold must be an integer" >&2; exit 1; }
+          sleep "$HOLD"
